@@ -2,10 +2,12 @@
 
 Generated from https://github.com/rupa/z/blob/master/z.sh using the following conversation and some debugging.
 
+The conversation is with Claude 3.5 Sonnet, and cost me $0.55 and about an hour and a half, including write-up.
+
 ### USER
 I’m trying to port z.sh to the fish shell.  Here’s the Bash source, can you rewrite it in fish for me please?
 
-```  
+```bash
 # Copyright (c) 2009 rupa deadwyler. Licensed under the WTFPL license, Version 2
 # maintains a jump-list of the directories you actually use
 #
