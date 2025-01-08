@@ -1,246 +1,159 @@
-# Copyright (c) 2009 rupa deadwyler. Licensed under the WTFPL license, Version 2
-# maintains a jump-list of the directories you actually use
-#
-# INSTALL:
-#     * put something like this in your .bashrc/.zshrc:
-#         . /path/to/z.sh
-#     * cd around for a while to build up the db
-#     * PROFIT!!
-#     * optionally:
-#         set $_Z_CMD in .bashrc/.zshrc to change the command (default z).
-#         set $_Z_DATA in .bashrc/.zshrc to change the datafile (default ~/.z).
-#         set $_Z_MAX_SCORE lower to age entries out faster (default 9000).
-#         set $_Z_NO_RESOLVE_SYMLINKS to prevent symlink resolution.
-#         set $_Z_NO_PROMPT_COMMAND if you're handling PROMPT_COMMAND yourself.
-#         set $_Z_EXCLUDE_DIRS to an array of directories to exclude.
-#         set $_Z_OWNER to your username if you want use z while sudo with $HOME kept
-#
-# USE:
-#     * z foo     # cd to most frecent dir matching foo
-#     * z foo bar # cd to most frecent dir matching foo and bar
-#     * z -r foo  # cd to highest ranked dir matching foo
-#     * z -t foo  # cd to most recently accessed dir matching foo
-#     * z -l foo  # list matches instead of cd
-#     * z -e foo  # echo the best match, don't cd
-#     * z -c foo  # restrict matches to subdirs of $PWD
-#     * z -x      # remove the current directory from the datafile
-#     * z -h      # show a brief help message
-[ -d "${_Z_DATA:-$HOME/.z}" ] && {
-    echo "ERROR: z.sh's datafile (${_Z_DATA:-$HOME/.z}) is a directory."
-}
-_z() {
-    local datafile="${_Z_DATA:-$HOME/.z}"
-    # if symlink, dereference
-    [ -h "$datafile" ] && datafile=$(readlink "$datafile")
-    # bail if we don't own ~/.z and $_Z_OWNER not set
-    [ -z "$_Z_OWNER" -a -f "$datafile" -a ! -O "$datafile" ] && return
-    _z_dirs () {
-        [ -f "$datafile" ] || return
-        local line
-        while read line; do
-            # only count directories
-            [ -d "${line%%\|*}" ] && echo "$line"
-        done < "$datafile"
-        return 0
-    }
-    # add entries
-    if [ "$1" = "--add" ]; then
-        shift
-        # $HOME and / aren't worth matching
-        [ "$*" = "$HOME" -o "$*" = '/' ] && return
-        # don't track excluded directory trees
-        if [ ${#_Z_EXCLUDE_DIRS[@]} -gt 0 ]; then
-            local exclude
-            for exclude in "${_Z_EXCLUDE_DIRS[@]}"; do
-                case "$*" in "$exclude"*) return;; esac
-            done
-        fi
-        # maintain the data file
-        local tempfile="$datafile.$RANDOM"
-        local score=${_Z_MAX_SCORE:-9000}
-        _z_dirs | \awk -v path="$*" -v now="$(\date +%s)" -v score=$score -F"|" '
-            BEGIN {
-                rank[path] = 1
-                time[path] = now
-            }
-            $2 >= 1 {
-                # drop ranks below 1
-                if( $1 == path ) {
-                    rank[$1] = $2 + 1
-                    time[$1] = now
-                } else {
-                    rank[$1] = $2
-                    time[$1] = $3
-                }
-                count += $2
-            }
-            END {
-                if( count > score ) {
-                    # aging
-                    for( x in rank ) print x "|" 0.99*rank[x] "|" time[x]
-                } else for( x in rank ) print x "|" rank[x] "|" time[x]
-            }
-        ' 2>/dev/null >| "$tempfile"
-        # do our best to avoid clobbering the datafile in a race condition.
-        if [ $? -ne 0 -a -f "$datafile" ]; then
-            \env rm -f "$tempfile"
-        else
-            [ "$_Z_OWNER" ] && chown $_Z_OWNER:"$(id -ng $_Z_OWNER)" "$tempfile"
-            \env mv -f "$tempfile" "$datafile" || \env rm -f "$tempfile"
-        fi
-    # tab completion
-    elif [ "$1" = "--complete" -a -s "$datafile" ]; then
-        _z_dirs | \awk -v q="$2" -F"|" '
-            BEGIN {
-                q = substr(q, 3)
-                if( q == tolower(q) ) imatch = 1
-                gsub(/ /, ".*", q)
-            }
-            {
-                if( imatch ) {
-                    if( tolower($1) ~ q ) print $1
-                } else if( $1 ~ q ) print $1
-            }
-        ' 2>/dev/null
-    else
-        # list/go
-        local echo fnd last list opt typ
-        while [ "$1" ]; do case "$1" in
-            --) while [ "$1" ]; do shift; fnd="$fnd${fnd:+ }$1";done;;
-            -*) opt=${1:1}; while [ "$opt" ]; do case ${opt:0:1} in
-                    c) fnd="^$PWD $fnd";;
-                    e) echo=1;;
-                    h) echo "${_Z_CMD:-z} [-cehlrtx] args" >&2; return;;
-                    l) list=1;;
-                    r) typ="rank";;
-                    t) typ="recent";;
-                    x) \sed -i -e "\:^${PWD}|.*:d" "$datafile";;
-                esac; opt=${opt:1}; done;;
-             *) fnd="$fnd${fnd:+ }$1";;
-        esac; last=$1; [ "$#" -gt 0 ] && shift; done
-        [ "$fnd" -a "$fnd" != "^$PWD " ] || list=1
-        # if we hit enter on a completion just go there
-        case "$last" in
-            # completions will always start with /
-            /*) [ -z "$list" -a -d "$last" ] && builtin cd "$last" && return;;
-        esac
-        # no file yet
-        [ -f "$datafile" ] || return
-        local cd
-        cd="$( < <( _z_dirs ) \awk -v t="$(\date +%s)" -v list="$list" -v typ="$typ" -v q="$fnd" -F"|" '
-            function frecent(rank, time) {
-              # relate frequency and time
-              dx = t - time
-              return int(10000 _rank_ (3.75/((0.0001 * dx + 1) + 0.25)))
-            }
-            function output(matches, best_match, common) {
-                # list or return the desired directory
-                if( list ) {
-                    if( common ) {
-                        printf "%-10s %s\n", "common:", common > "/dev/stderr"
-                    }
-                    cmd = "sort -n >&2"
-                    for( x in matches ) {
-                        if( matches[x] ) {
-                            printf "%-10s %s\n", matches[x], x | cmd
-                        }
-                    }
-                } else {
-                    if( common && !typ ) best_match = common
-                    print best_match
-                }
-            }
-            function common(matches) {
-                # find the common root of a list of matches, if it exists
-                for( x in matches ) {
-                    if( matches[x] && (!short || length(x) < length(short)) ) {
-                        short = x
-                    }
-                }
-                if( short == "/" ) return
-                for( x in matches ) if( matches[x] && index(x, short) != 1 ) {
+# z.fish - fish port of z.sh
+
+# Set up default values if not already set
+set -q _Z_CMD; or set -gx _Z_CMD "z"
+set -q _Z_DATA; or set -gx _Z_DATA "$HOME/.z"
+set -q _Z_MAX_SCORE; or set -gx _Z_MAX_SCORE 9000
+
+# Check if datafile is a directory
+if test -d $_Z_DATA
+    echo "ERROR: z.fish's datafile ($_Z_DATA) is a directory."
+end
+
+function _z -d "Jump to a recent directory."
+    set -l datafile "$_Z_DATA"
+
+    # Handle symlinks
+    if test -L "$datafile"
+        set datafile (readlink "$datafile")
+    end
+
+    # Bail if we don't own datafile and $_Z_OWNER not set
+    if test -z "$_Z_OWNER"; and test -f "$datafile"; and not test (id -u) = (stat -f %u "$datafile")
+        return
+    end
+
+    # Add entry
+    if test "$argv[1]" = "--add"
+        set -e argv[1]
+        set -l dir $argv
+        
+        # Skip if it's $HOME or root
+        if test "$dir" = "$HOME" -o "$dir" = "/"
+            return
+        end
+
+        # Check excluded directories
+        if set -q _Z_EXCLUDE_DIRS
+            for exclude in $_Z_EXCLUDE_DIRS
+                if string match -q "$exclude*" -- $dir
                     return
+                end
+            end
+        end
+
+        # Add entry to datafile
+        set -l tempfile "$datafile.$RANDOM"
+        
+        if test -f "$datafile"
+            awk -v path="$dir" -v now=(date +%s) -v score=$_Z_MAX_SCORE -F"|" '
+                BEGIN {
+                    rank[path] = 1
+                    time[path] = now
                 }
-                return short
-            }
-            BEGIN {
-                gsub(" ", ".*", q)
-                hi_rank = ihi_rank = -9999999999
-            }
-            {
-                if( typ == "rank" ) {
-                    rank = $2
-                } else if( typ == "recent" ) {
-                    rank = $3 - t
-                } else rank = frecent($2, $3)
-                if( $1 ~ q ) {
-                    matches[$1] = rank
-                } else if( tolower($1) ~ tolower(q) ) imatches[$1] = rank
-                if( matches[$1] && matches[$1] > hi_rank ) {
-                    best_match = $1
-                    hi_rank = matches[$1]
-                } else if( imatches[$1] && imatches[$1] > ihi_rank ) {
-                    ibest_match = $1
-                    ihi_rank = imatches[$1]
+                $2 >= 1 {
+                    if( $1 == path ) {
+                        rank[$1] = $2 + 1
+                        time[$1] = now
+                    } else {
+                        rank[$1] = $2
+                        time[$1] = $3
+                    }
+                    count += $2
                 }
-            }
-            END {
-                # prefer case sensitive
-                if( best_match ) {
-                    output(matches, best_match, common(matches))
-                    exit
-                } else if( ibest_match ) {
-                    output(imatches, ibest_match, common(imatches))
-                    exit
+                END {
+                    if( count > score ) {
+                        for( x in rank ) print x "|" 0.99*rank[x] "|" time[x]
+                    } else for( x in rank ) print x "|" rank[x] "|" time[x]
                 }
-                exit(1)
-            }
-        ')"
-        if [ "$?" -eq 0 ]; then
-          if [ "$cd" ]; then
-            if [ "$echo" ]; then echo "$cd"; else builtin cd "$cd"; fi
-          fi
+            ' "$datafile" 2>/dev/null >$tempfile
+            
+            if test $status -eq 0
+                mv -f "$tempfile" "$datafile"
+            else
+                rm -f "$tempfile"
+            end
         else
-          return $?
-        fi
-    fi
-}
-alias ${_Z_CMD:-z}='_z 2>&1'
-[ "$_Z_NO_RESOLVE_SYMLINKS" ] || _Z_RESOLVE_SYMLINKS="-P"
-if type compctl >/dev/null 2>&1; then
-    # zsh
-    [ "$_Z_NO_PROMPT_COMMAND" ] || {
-        # populate directory list, avoid clobbering any other precmds.
-        if [ "$_Z_NO_RESOLVE_SYMLINKS" ]; then
-            _z_precmd() {
-                (_z --add "${PWD:a}" &)
-                : $RANDOM
-            }
-        else
-            _z_precmd() {
-                (_z --add "${PWD:A}" &)
-                : $RANDOM
-            }
-        fi
-        [[ -n "${precmd_functions[(r)_z_precmd]}" ]] || {
-            precmd_functions[$(($#precmd_functions+1))]=_z_precmd
-        }
-    }
-    _z_zsh_tab_completion() {
-        # tab completion
-        local compl
-        read -l compl
-        reply=(${(f)"$(_z --complete "$compl")"})
-    }
-    compctl -U -K _z_zsh_tab_completion _z
-elif type complete >/dev/null 2>&1; then
-    # bash
-    # tab completion
-    complete -o filenames -C '_z --complete "$COMP_LINE"' ${_Z_CMD:-z}
-    [ "$_Z_NO_PROMPT_COMMAND" ] || {
-        # populate directory list. avoid clobbering other PROMPT_COMMANDs.
-        grep "_z --add" <<< "$PROMPT_COMMAND" >/dev/null || {
-            PROMPT_COMMAND="$PROMPT_COMMAND"$'\n''(_z --add "$(command pwd '$_Z_RESOLVE_SYMLINKS' 2>/dev/null)" 2>/dev/null &);'
-        }
-    }
-fi  
+            echo "$dir|1|"(date +%s) >$datafile
+        end
+
+    # Complete
+    else if test "$argv[1]" = "--complete"
+        if test -f "$datafile"
+            while read -l line
+                set -l dir (string split '|' $line)[1]
+                if test -d "$dir"
+                    echo $dir
+                end
+            end < "$datafile"
+        end
+
+    # List/Search
+    else
+        set -l typ
+        set -l list
+        set -l echo
+        set -l fnd
+
+        # Parse options
+        set -l options "h/help" "l/list" "r/rank" "t/recent" "e/echo" "c/current" "x/delete"
+        argparse $options -- $argv
+
+        if set -q _flag_help
+            echo "Usage: $_Z_CMD [-cehlrtx] args..." >&2
+            return
+        end
+
+        set -q _flag_list; and set list 1
+        set -q _flag_echo; and set echo 1
+        set -q _flag_rank; and set typ "rank"
+        set -q _flag_recent; and set typ "recent"
+        
+        if set -q _flag_current
+            set fnd "^$PWD $fnd"
+        end
+
+        if set -q _flag_delete
+            sed -i -e "\:^$PWD|.*:d" "$datafile"
+            return
+        end
+
+        # Build search string from remaining arguments
+        for arg in $argv
+            set fnd "$fnd $arg"
+        end
+        set fnd (string trim "$fnd")
+
+        [ -f "$datafile" ]; or return
+
+        set -l cd (while read -l line
+            set -l parts (string split '|' $line)
+            set -l dir $parts[1]
+            set -l rank $parts[2]
+            set -l time $parts[3]
+
+            if test -d $dir
+                if string match -q -- "*$fnd*" $dir
+                    echo "$rank|$time|$dir"
+                end
+            end
+        end < "$datafile" | sort -n -r | head -n 1 | cut -d'|' -f3)
+
+        if test -n "$cd"
+            if test -n "$echo"
+                echo "$cd"
+            else
+                cd "$cd"
+            end
+        end
+    end
+end
+
+# Register completions
+complete -c $_Z_CMD -a "(_z --complete (commandline -t))"
+
+# Add directory on directory change
+function _z_on_pwd --on-variable PWD
+    status --is-command-substitution; and return
+    _z --add "$PWD" &
+end
