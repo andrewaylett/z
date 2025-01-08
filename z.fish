@@ -11,7 +11,7 @@ if test -d $_Z_DATA
 end
 
 function _z -d "Jump to a recent directory."
-    set -l datafile "$_Z_DATA"
+    set -f datafile "$_Z_DATA"
 
     # Handle symlinks
     if test -L "$datafile"
@@ -24,20 +24,20 @@ function _z -d "Jump to a recent directory."
     end
 
     function _z_dirs
-        [ -f "$datafile" ]; or return
+        test -f "$argv"; or return
         while read -l line
             set -l dir (string split '|' $line)[1]
             if test -d "$dir"
                 echo $line
             end
-        end < "$datafile"
+        end < "$argv"
     end
 
     # Add entry
     if test "$argv[1]" = "--add"
         set -e argv[1]
         set -l dir $argv
-        
+
         # Skip if it's $HOME or root
         if test "$dir" = "$HOME" -o "$dir" = "/"
             return
@@ -54,13 +54,14 @@ function _z -d "Jump to a recent directory."
 
         # Add entry to datafile
         set -l tempfile "$datafile.$RANDOM"
-        
-        _z_dirs | awk -v path="$dir" -v now=(date +%s) -v score=$_Z_MAX_SCORE -F"|" '
+
+        _z_dirs $datafile | awk -v path="$dir" -v now=(date +%s) -v score=$_Z_MAX_SCORE -F"|" '
             BEGIN {
                 rank[path] = 1
                 time[path] = now
             }
             $2 >= 1 {
+                # drop ranks below 1
                 if( $1 == path ) {
                     rank[$1] = $2 + 1
                     time[$1] = now
@@ -72,6 +73,7 @@ function _z -d "Jump to a recent directory."
             }
             END {
                 if( count > score ) {
+                    # aging
                     for( x in rank ) print x "|" 0.99*rank[x] "|" time[x]
                 } else for( x in rank ) print x "|" rank[x] "|" time[x]
             }
@@ -88,55 +90,49 @@ function _z -d "Jump to a recent directory."
 
     # Complete
     else if test "$argv[1]" = "--complete"
-        _z_dirs | awk -v q="$argv[2]" -F"|" '
-            BEGIN {
-                q = substr(q, 3)
-                if( q == tolower(q) ) imatch = 1
-                gsub(/ /, ".*", q)
-            }
-            {
-                if( imatch ) {
-                    if( tolower($1) ~ q ) print $1
-                } else if( $1 ~ q ) print $1
-            }
-        ' 2>/dev/null
+        if test -f "$datafile"
+            while read -l line
+                set -l dir (string split '|' $line)[1]
+                if test -d "$dir"
+                    echo $dir
+                end
+            end < "$datafile"
+        end
 
     # List/Search
     else
+        set -l typ
+        set -l list
+        set -l echo
+        set -l fnd
+
         # Parse options
         set -l options "h/help" "l/list" "r/rank" "t/recent" "e/echo" "c/current" "x/delete"
         argparse $options -- $argv
-        or return
 
         if set -q _flag_help
             echo "Usage: $_Z_CMD [-cehlrtx] args..." >&2
             return
         end
 
-        set -l typ
-        set -l list
-        set -l echo
-        set -l fnd (string join ' ' $argv)
+        set -q _flag_list; and set list 1
+        set -q _flag_rank; and set typ "rank"
+        set -q _flag_recent; and set typ "recent"
 
-        if set -q _flag_list
-            set list 1
-        end
-        if set -q _flag_echo
-            set echo 1
-        end
-        if set -q _flag_rank
-            set typ "rank"
-        end
-        if set -q _flag_recent
-            set typ "recent"
-        end
         if set -q _flag_current
             set fnd "^$PWD $fnd"
         end
+
         if set -q _flag_delete
             sed -i -e "\:^$PWD|.*:d" "$datafile"
             return
         end
+
+        # Build search string from remaining arguments
+        for arg in $argv
+            set fnd "$fnd $arg"
+        end
+        set fnd (string trim "$fnd")
 
         [ -f "$datafile" ]; or return
 
@@ -148,13 +144,15 @@ function _z -d "Jump to a recent directory."
                 end
             end
         end
-        
-        set -l result (_z_dirs | awk -v t=(date +%s) -v list="$list" -v typ="$typ" -v q="$fnd" -F"|" '
+
+        set -l result (_z_dirs $datafile | awk -v t=(date +%s) -v list="$list" -v typ="$typ" -v q="$fnd" -F"|" '
             function frecent(rank, time) {
+              # relate frequency and time
                 dx = t - time
-                return int(10000 * rank * (3.75/((0.0001 * dx + 1) + 0.25)))
+              return int(10000 _rank_ (3.75/((0.0001 * dx + 1) + 0.25)))
             }
             function output(matches, best_match, common) {
+                # list or return the desired directory
                 if( list ) {
                     if( common ) {
                         printf "%-10s %s\n", "common:", common > "/dev/stderr"
@@ -218,25 +216,20 @@ function _z -d "Jump to a recent directory."
         ')
 
         if test $status -eq 0; and test -n "$result"
-            if test -n "$echo"
+            if set -q _flag_echo
                 echo "$result"
             else if test -d "$result"
-                builtin cd "$result"
+                cd "$result"
             end
+        else
+            return $status
         end
     end
 end
 
 # Wrapper function that enables the behavior to change directory
 function z -d "jump to directory"
-    if not set -q argv[1]
-        return
-    end
-    
-    set -l output (_z $argv)
-    if test -d "$output"
-        cd "$output"
-    end
+    _z $argv
 end
 
 # Register completions
