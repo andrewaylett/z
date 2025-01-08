@@ -221,14 +221,22 @@ function _z -d "Jump to a recent directory."
             if test -n "$echo"
                 echo "$result"
             else if test -d "$result"
-                cd "$result"
+                builtin cd "$result"
             end
         end
     end
 end
 
+# Wrapper function that enables the behavior to change directory
 function z -d "jump to directory"
-    _z $argv
+    if not set -q argv[1]
+        return
+    end
+    
+    set -l output (_z $argv)
+    if test -d "$output"
+        cd "$output"
+    end
 end
 
 # Register completions
