@@ -147,8 +147,17 @@ function _z -d "Jump to a recent directory."
         end
 
         [ -f "$datafile" ]; or return
+
+        if test -n "$last"
+            if test -d "$last"
+                if test -z "$list"
+                    cd "$last"
+                    return
+                end
+            end
+        end
         
-        set -l cd (_z_dirs | awk -v t=(date +%s) -v list="$list" -v typ="$typ" -v q="$fnd" -F"|" '
+        set -l result (_z_dirs | awk -v t=(date +%s) -v list="$list" -v typ="$typ" -v q="$fnd" -F"|" '
             function frecent(rank, time) {
                 dx = t - time
                 return int(10000 * rank * (3.75/((0.0001 * dx + 1) + 0.25)))
@@ -216,11 +225,11 @@ function _z -d "Jump to a recent directory."
             }
         ')
 
-        if test $status -eq 0; and test -n "$cd"
+        if test $status -eq 0; and test -n "$result"
             if test -n "$echo"
-                echo "$cd"
-            else
-                cd "$cd"
+                echo "$result"
+            else if test -d "$result"
+                cd "$result"
             end
         end
     end
