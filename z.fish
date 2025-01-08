@@ -103,55 +103,47 @@ function _z -d "Jump to a recent directory."
 
     # List/Search
     else
+        # Parse options
+        set -l options "h/help" "l/list" "r/rank" "t/recent" "e/echo" "c/current" "x/delete"
+        argparse $options -- $argv
+        or return
+
+        if set -q _flag_help
+            echo "Usage: $_Z_CMD [-cehlrtx] args..." >&2
+            return
+        end
+
         set -l typ
         set -l list
         set -l echo
-        set -l fnd
-        set -l last
+        set -l fnd (string join ' ' $argv)
 
-        # Parse arguments
-        while test (count $argv) -gt 0
-            switch $argv[1]
-                case '--'
-                    set -e argv[1]
-                    set fnd (string join ' ' $argv)
-                    break
-                case '-*'
-                    set -l opt (string sub -s 2 $argv[1])
-                    while test -n "$opt"
-                        switch (string sub -s 1 -l 1 $opt)
-                            case 'c'
-                                set fnd "^$PWD $fnd"
-                            case 'e'
-                                set echo 1
-                            case 'h'
-                                echo "$_Z_CMD [-cehlrtx] args" >&2
-                                return
-                            case 'l'
-                                set list 1
-                            case 'r'
-                                set typ "rank"
-                            case 't'
-                                set typ "recent"
-                            case 'x'
-                                sed -i -e "\:^$PWD|.*:d" "$datafile"
-                                return
-                        end
-                        set opt (string sub -s 2 $opt)
-                    end
-                case '*'
-                    set fnd "$fnd $argv[1]"
-            end
-            set last $argv[1]
-            set -e argv[1]
+        if set -q _flag_list
+            set list 1
+        end
+        if set -q _flag_echo
+            set echo 1
+        end
+        if set -q _flag_rank
+            set typ "rank"
+        end
+        if set -q _flag_recent
+            set typ "recent"
+        end
+        if set -q _flag_current
+            set fnd "^$PWD $fnd"
+        end
+        if set -q _flag_delete
+            sed -i -e "\:^$PWD|.*:d" "$datafile"
+            return
         end
 
         [ -f "$datafile" ]; or return
 
-        if test -n "$last"
-            if test -d "$last"
+        if test -n "$argv[1]"
+            if test -d "$argv[1]"
                 if test -z "$list"
-                    cd "$last"
+                    cd "$argv[1]"
                     return
                 end
             end
@@ -233,6 +225,10 @@ function _z -d "Jump to a recent directory."
             end
         end
     end
+end
+
+function z -d "jump to directory"
+    _z $argv
 end
 
 # Register completions
